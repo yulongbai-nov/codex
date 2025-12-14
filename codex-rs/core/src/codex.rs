@@ -92,6 +92,7 @@ use crate::error::Result as CodexResult;
 use crate::exec::StreamOutput;
 use crate::exec_policy::ExecPolicyUpdateError;
 use crate::feedback_tags;
+use crate::graphiti::service::GraphitiMemoryService;
 use crate::mcp::auth::compute_auth_statuses;
 use crate::mcp_connection_manager::McpConnectionManager;
 use crate::model_provider_info::CHAT_WIRE_API_DEPRECATION_SUMMARY;
@@ -677,6 +678,12 @@ impl Session {
             user_shell: Arc::new(default_shell),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
+            graphiti_memory: GraphitiMemoryService::new_if_enabled(
+                &config,
+                &conversation_id,
+                &session_configuration.cwd,
+            )
+            .await,
             auth_manager: Arc::clone(&auth_manager),
             otel_manager,
             models_manager: Arc::clone(&models_manager),
@@ -2314,6 +2321,7 @@ pub(crate) async fn run_task(
     if total_usage_tokens >= auto_compact_limit {
         run_auto_compact(&sess, &turn_context).await;
     }
+    let user_turn_text = user_inputs_to_text(&input);
     let event = EventMsg::TaskStarted(TaskStartedEvent {
         model_context_window: turn_context.client.get_model_context_window(),
     });
@@ -2365,7 +2373,7 @@ pub(crate) async fn run_task(
             .collect::<Vec<ResponseItem>>();
 
         // Construct the input that we will send to the model.
-        let turn_input: Vec<ResponseItem> = {
+        let mut turn_input: Vec<ResponseItem> = {
             sess.record_conversation_items(&turn_context, &pending_input)
                 .await;
             sess.clone_history().await.get_history_for_prompt()
@@ -2379,6 +2387,14 @@ pub(crate) async fn run_task(
             })
             .map(|user_message| user_message.message())
             .collect::<Vec<String>>();
+
+        if let Some(graphiti) = sess.services.graphiti_memory.as_ref()
+            && let Some(memory_item) = graphiti
+                .recall_prompt_item(&turn_context.sub_id, &user_turn_text)
+                .await
+        {
+            insert_before_last_user_message(&mut turn_input, memory_item);
+        }
         match run_turn(
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -2404,6 +2420,15 @@ pub(crate) async fn run_task(
 
                 if !needs_follow_up {
                     last_agent_message = turn_last_agent_message;
+                    if let Some(graphiti) = sess.services.graphiti_memory.as_ref() {
+                        graphiti
+                            .ingest_turn(
+                                &turn_context.sub_id,
+                                &user_turn_text,
+                                last_agent_message.as_deref().unwrap_or_default(),
+                            )
+                            .await;
+                    }
                     sess.notifier()
                         .notify(&UserNotification::AgentTurnComplete {
                             thread_id: sess.conversation_id.to_string(),
@@ -2448,7 +2473,30 @@ async fn run_auto_compact(sess: &Arc<Session>, turn_context: &Arc<TurnContext>) 
     }
 }
 
-#[instrument(level = "trace",
+fn user_inputs_to_text(items: &[UserInput]) -> String {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            UserInput::Text { text } => Some(text.as_str()),
+            UserInput::Image { .. } => None,
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn insert_before_last_user_message(items: &mut Vec<ResponseItem>, memory_item: ResponseItem) {
+    let insert_at = items.iter().rposition(|item| match item {
+        ResponseItem::Message { role, .. } => role == "user",
+        _ => false,
+    });
+    match insert_at {
+        Some(index) => items.insert(index, memory_item),
+        None => items.push(memory_item),
+    }
+}
+
+#[instrument(
     skip_all,
     fields(
         turn_id = %turn_context.sub_id,
@@ -3488,6 +3536,7 @@ mod tests {
             user_shell: Arc::new(default_user_shell()),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
+            graphiti_memory: None,
             auth_manager: auth_manager.clone(),
             otel_manager: otel_manager.clone(),
             models_manager: Arc::clone(&models_manager),
@@ -3582,6 +3631,7 @@ mod tests {
             user_shell: Arc::new(default_user_shell()),
             show_raw_agent_reasoning: config.show_raw_agent_reasoning,
             exec_policy,
+            graphiti_memory: None,
             auth_manager: Arc::clone(&auth_manager),
             otel_manager: otel_manager.clone(),
             models_manager: Arc::clone(&models_manager),
