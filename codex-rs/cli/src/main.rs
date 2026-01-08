@@ -49,7 +49,6 @@ use codex_core::features::Feature;
 use codex_core::features::FeatureOverrides;
 use codex_core::features::Features;
 use codex_core::features::is_known_feature_key;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_core::git_info::get_git_repo_root;
 use codex_core::graphiti::client::AddMessagesRequest;
 use codex_core::graphiti::client::GraphitiClient;
@@ -547,7 +546,8 @@ async fn run_graphiti_cli(cli: GraphitiCli, config_profile: Option<String>) -> a
         config_profile,
         ..Default::default()
     };
-    let config = Config::load_with_cli_overrides(cli_kv_overrides, overrides).await?;
+    let config =
+        Config::load_with_cli_overrides_and_harness_overrides(cli_kv_overrides, overrides).await?;
 
     match cli.sub {
         GraphitiSubcommand::Status(args) => {

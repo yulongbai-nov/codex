@@ -688,7 +688,7 @@ impl Default for ShellEnvironmentPolicy {
 
 // ===== Graphiti configuration =====
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GraphitiGroupIdStrategy {
     Raw,
@@ -701,7 +701,7 @@ impl Default for GraphitiGroupIdStrategy {
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum GraphitiScope {
     Session,
@@ -741,7 +741,7 @@ fn default_graphiti_retry_max_backoff_ms() -> u64 {
     5_000
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GraphitiIngest {
     /// Request timeout for `POST /messages`.
     #[serde(default = "default_graphiti_ingest_timeout_ms")]
@@ -799,7 +799,7 @@ fn default_graphiti_recall_max_total_chars() -> usize {
     2_000
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GraphitiRecall {
     /// If true, recall will run before each model turn.
     #[serde(default)]
@@ -844,7 +844,7 @@ impl Default for GraphitiRecall {
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum GraphitiRecallScopesMode {
     Static,
@@ -859,7 +859,7 @@ fn default_graphiti_global_group_id() -> String {
     "codex-global".to_string()
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GraphitiGlobal {
     /// If true, enables Global scope (promotion and optional recall).
     #[serde(default)]
@@ -879,14 +879,14 @@ impl Default for GraphitiGlobal {
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct GraphitiAutoPromote {
     /// If true, parse supported "Memory Directives" in user messages and enqueue extra episodes.
     #[serde(default)]
     pub enabled: bool,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct Graphiti {
     /// Master enable switch (default: false).
     #[serde(default)]
