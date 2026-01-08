@@ -217,7 +217,7 @@ impl AuthModeWidget {
         };
 
         let chatgpt_description = if self.is_chatgpt_login_allowed() {
-            "Usage included with Plus, Pro, Team, and Enterprise plans"
+            "Usage included with Plus, Pro, Business, Education, and Enterprise plans"
         } else {
             "ChatGPT login is disabled"
         };
@@ -278,6 +278,12 @@ impl AuthModeWidget {
             lines.push("  If the link doesn't open automatically, open the following link to authenticate:".into());
             lines.push("".into());
             lines.push(Line::from(state.auth_url.as_str().cyan().underlined()));
+            lines.push("".into());
+            lines.push(Line::from(vec![
+                "  On a remote or headless machine? Use ".into(),
+                "codex login --device-auth".cyan(),
+                " instead".into(),
+            ]));
             lines.push("".into());
         }
 

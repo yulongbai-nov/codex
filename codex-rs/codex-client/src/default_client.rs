@@ -104,6 +104,13 @@ impl CodexRequestBuilder {
         self.map(|builder| builder.json(value))
     }
 
+    pub fn body<B>(self, body: B) -> Self
+    where
+        B: Into<reqwest::Body>,
+    {
+        self.map(|builder| builder.body(body))
+    }
+
     pub async fn send(self) -> Result<Response, reqwest::Error> {
         let headers = trace_headers();
 
@@ -181,7 +188,7 @@ mod tests {
     use opentelemetry::trace::TracerProvider;
     use opentelemetry_sdk::propagation::TraceContextPropagator;
     use opentelemetry_sdk::trace::SdkTracerProvider;
-    use tracing::info_span;
+    use tracing::trace_span;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -195,7 +202,7 @@ mod tests {
             tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
         let _guard = subscriber.set_default();
 
-        let span = info_span!("client_request");
+        let span = trace_span!("client_request");
         let _entered = span.enter();
         let span_context = span.context().span().span_context().clone();
 

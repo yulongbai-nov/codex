@@ -221,7 +221,7 @@ mod option_duration_secs {
     }
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
 pub enum UriBasedFileOpener {
     #[serde(rename = "vscode")]
     VsCode,
@@ -253,7 +253,7 @@ impl UriBasedFileOpener {
 }
 
 /// Settings that govern if and what will be written to `~/.codex/history.jsonl`.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct History {
     /// If true, history entries will not be written to disk.
     pub persistence: HistoryPersistence,
@@ -263,7 +263,7 @@ pub struct History {
     pub max_bytes: Option<usize>,
 }
 
-#[derive(Deserialize, Debug, Copy, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum HistoryPersistence {
     /// Save all history entries to disk.
@@ -273,9 +273,18 @@ pub enum HistoryPersistence {
     None,
 }
 
+// ===== Analytics configuration =====
+
+/// Analytics settings loaded from config.toml. Fields are optional so we can apply defaults.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct AnalyticsConfigToml {
+    /// When `false`, disables analytics across Codex product surfaces in this profile.
+    pub enabled: Option<bool>,
+}
+
 // ===== OTEL configuration =====
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OtelHttpProtocol {
     /// Binary payload
@@ -284,7 +293,7 @@ pub enum OtelHttpProtocol {
     Json,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub struct OtelTlsConfig {
     pub ca_certificate: Option<AbsolutePathBuf>,
@@ -293,10 +302,11 @@ pub struct OtelTlsConfig {
 }
 
 /// Which OTEL exporter to use.
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum OtelExporterKind {
     None,
+    Statsig,
     OtlpHttp {
         endpoint: String,
         #[serde(default)]
@@ -315,7 +325,7 @@ pub enum OtelExporterKind {
 }
 
 /// OTEL settings loaded from config.toml. Fields are optional so we can apply defaults.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct OtelConfigToml {
     /// Log user prompt in traces
     pub log_user_prompt: Option<bool>,
@@ -328,6 +338,11 @@ pub struct OtelConfigToml {
 
     /// Optional trace exporter
     pub trace_exporter: Option<OtelExporterKind>,
+
+    /// Optional metrics exporter
+    ///
+    /// Defaults to `statsig` outside of tests.
+    pub metrics_exporter: Option<OtelExporterKind>,
 }
 
 /// Effective OTEL settings after defaults are applied.
@@ -337,6 +352,7 @@ pub struct OtelConfig {
     pub environment: String,
     pub exporter: OtelExporterKind,
     pub trace_exporter: OtelExporterKind,
+    pub metrics_exporter: OtelExporterKind,
 }
 
 impl Default for OtelConfig {
@@ -346,11 +362,12 @@ impl Default for OtelConfig {
             environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
             exporter: OtelExporterKind::None,
             trace_exporter: OtelExporterKind::None,
+            metrics_exporter: OtelExporterKind::Statsig,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Serialize, Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum Notifications {
     Enabled(bool),
@@ -363,8 +380,30 @@ impl Default for Notifications {
     }
 }
 
+/// How TUI2 should interpret mouse scroll events.
+///
+/// Terminals generally encode both mouse wheels and trackpads as the same "scroll up/down" mouse
+/// button events, without a magnitude. This setting controls whether Codex uses a heuristic to
+/// infer wheel vs trackpad per stream, or forces a specific behavior.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollInputMode {
+    /// Infer wheel vs trackpad behavior per scroll stream.
+    Auto,
+    /// Always treat scroll events as mouse-wheel input (fixed lines per tick).
+    Wheel,
+    /// Always treat scroll events as trackpad input (fractional accumulation).
+    Trackpad,
+}
+
+impl Default for ScrollInputMode {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 /// Collection of settings that are specific to the TUI.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Tui {
     /// Enable desktop notifications from the TUI when the terminal is unfocused.
     /// Defaults to `true`.
@@ -380,6 +419,109 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
+
+    /// Override the *wheel* event density used to normalize TUI2 scrolling.
+    ///
+    /// Terminals generally deliver both mouse wheels and trackpads as discrete `scroll up/down`
+    /// mouse events with direction but no magnitude. Unfortunately, the *number* of raw events
+    /// per physical wheel notch varies by terminal (commonly 1, 3, or 9+). TUI2 uses this value
+    /// to normalize that raw event density into consistent "wheel tick" behavior.
+    ///
+    /// Wheel math (conceptually):
+    ///
+    /// - A single event contributes `1 / scroll_events_per_tick` tick-equivalents.
+    /// - Wheel-like streams then scale that by `scroll_wheel_lines` so one physical notch scrolls
+    ///   a fixed number of lines.
+    ///
+    /// Trackpad math is intentionally *not* fully tied to this value: in trackpad-like mode, TUI2
+    /// uses `min(scroll_events_per_tick, 3)` as the divisor so terminals with dense wheel ticks
+    /// (e.g. 9 events per notch) do not make trackpads feel artificially slow.
+    ///
+    /// Defaults are derived per terminal from [`crate::terminal::TerminalInfo`] when TUI2 starts.
+    /// See `codex-rs/tui2/docs/scroll_input_model.md` for the probe data and rationale.
+    pub scroll_events_per_tick: Option<u16>,
+
+    /// Override how many transcript lines one physical *wheel notch* should scroll in TUI2.
+    ///
+    /// This is the "classic feel" knob. Defaults to 3.
+    ///
+    /// Wheel-like per-event contribution is `scroll_wheel_lines / scroll_events_per_tick`. For
+    /// example, in a terminal that emits 9 events per notch, the default `3 / 9` yields 1/3 of a
+    /// line per event and totals 3 lines once the full notch burst arrives.
+    ///
+    /// See `codex-rs/tui2/docs/scroll_input_model.md` for details on the stream model and the
+    /// wheel/trackpad heuristic.
+    pub scroll_wheel_lines: Option<u16>,
+
+    /// Override baseline trackpad scroll sensitivity in TUI2.
+    ///
+    /// Trackpads do not have discrete notches, but terminals still emit discrete `scroll up/down`
+    /// events. In trackpad-like mode, TUI2 accumulates fractional scroll and only applies whole
+    /// lines to the viewport.
+    ///
+    /// Trackpad per-event contribution is:
+    ///
+    /// - `scroll_trackpad_lines / min(scroll_events_per_tick, 3)`
+    ///
+    /// (plus optional bounded acceleration; see `scroll_trackpad_accel_*`). The `min(..., 3)`
+    /// divisor is deliberate: `scroll_events_per_tick` is calibrated from *wheel* behavior and
+    /// can be much larger than trackpad event density, which would otherwise make trackpads feel
+    /// too slow in dense-wheel terminals.
+    ///
+    /// Defaults to 1, meaning one tick-equivalent maps to one transcript line.
+    pub scroll_trackpad_lines: Option<u16>,
+
+    /// Trackpad acceleration: approximate number of events required to gain +1x speed in TUI2.
+    ///
+    /// This keeps small swipes precise while allowing large/faster swipes to cover more content.
+    /// Defaults are chosen to address terminals where trackpad event density is comparatively low.
+    ///
+    /// Concretely, TUI2 computes an acceleration multiplier for trackpad-like streams:
+    ///
+    /// - `multiplier = clamp(1 + abs(events) / scroll_trackpad_accel_events, 1..scroll_trackpad_accel_max)`
+    ///
+    /// The multiplier is applied to the stream’s computed line delta (including any carried
+    /// fractional remainder).
+    pub scroll_trackpad_accel_events: Option<u16>,
+
+    /// Trackpad acceleration: maximum multiplier applied to trackpad-like streams.
+    ///
+    /// Set to 1 to effectively disable trackpad acceleration.
+    ///
+    /// See [`Tui::scroll_trackpad_accel_events`] for the exact multiplier formula.
+    pub scroll_trackpad_accel_max: Option<u16>,
+
+    /// Select how TUI2 interprets mouse scroll input.
+    ///
+    /// - `auto` (default): infer wheel vs trackpad per scroll stream.
+    /// - `wheel`: always use wheel behavior (fixed lines per wheel notch).
+    /// - `trackpad`: always use trackpad behavior (fractional accumulation; wheel may feel slow).
+    #[serde(default)]
+    pub scroll_mode: ScrollInputMode,
+
+    /// Auto-mode threshold: maximum time (ms) for the first tick-worth of events to arrive.
+    ///
+    /// In `scroll_mode = "auto"`, TUI2 starts a stream as trackpad-like (to avoid overshoot) and
+    /// promotes it to wheel-like if `scroll_events_per_tick` events arrive "quickly enough". This
+    /// threshold controls what "quickly enough" means.
+    ///
+    /// Most users should leave this unset; it is primarily for terminals that emit wheel ticks
+    /// batched over longer time spans.
+    pub scroll_wheel_tick_detect_max_ms: Option<u64>,
+
+    /// Auto-mode fallback: maximum duration (ms) that a very small stream is still treated as wheel-like.
+    ///
+    /// This is only used when `scroll_events_per_tick` is effectively 1 (one event per wheel
+    /// notch). In that case, we cannot observe a "tick completion time", so TUI2 treats a
+    /// short-lived, small stream (<= 2 events) as wheel-like to preserve classic wheel behavior.
+    pub scroll_wheel_like_max_duration_ms: Option<u64>,
+
+    /// Invert mouse scroll direction in TUI2.
+    ///
+    /// This flips the scroll sign after terminal detection. It is applied consistently to both
+    /// wheel and trackpad input.
+    #[serde(default)]
+    pub scroll_invert: bool,
 }
 
 const fn default_true() -> bool {
@@ -389,7 +531,7 @@ const fn default_true() -> bool {
 /// Settings for notices we display to users via the tui and app-server clients
 /// (primarily the Codex IDE extension). NOTE: these are different from
 /// notifications - notices are warnings, NUX screens, acknowledgements, etc.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct Notice {
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
@@ -412,7 +554,7 @@ impl Notice {
     pub(crate) const TABLE_KEY: &'static str = "notice";
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SandboxWorkspaceWrite {
     #[serde(default)]
     pub writable_roots: Vec<AbsolutePathBuf>,
@@ -435,7 +577,7 @@ impl From<SandboxWorkspaceWrite> for codex_app_server_protocol::SandboxSettings 
     }
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ShellEnvironmentPolicyInherit {
     /// "Core" environment variables for the platform. On UNIX, this would
@@ -452,7 +594,7 @@ pub enum ShellEnvironmentPolicyInherit {
 
 /// Policy for building the `env` when spawning a process via either the
 /// `shell` or `local_shell` tool.
-#[derive(Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ShellEnvironmentPolicyToml {
     pub inherit: Option<ShellEnvironmentPolicyInherit>,
 
@@ -474,17 +616,17 @@ pub type EnvironmentVariablePattern = WildMatchPattern<'*', '?'>;
 /// Deriving the `env` based on this policy works as follows:
 /// 1. Create an initial map based on the `inherit` policy.
 /// 2. If `ignore_default_excludes` is false, filter the map using the default
-///    exclude pattern(s), which are: `"*KEY*"` and `"*TOKEN*"`.
+///    exclude pattern(s), which are: `"*KEY*"`, `"*SECRET*"`, and `"*TOKEN*"`.
 /// 3. If `exclude` is not empty, filter the map using the provided patterns.
 /// 4. Insert any entries from `r#set` into the map.
 /// 5. If non-empty, filter the map using the `include_only` patterns.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ShellEnvironmentPolicy {
     /// Starting point when building the environment.
     pub inherit: ShellEnvironmentPolicyInherit,
 
     /// True to skip the check to exclude default environment variables that
-    /// contain "KEY" or "TOKEN" in their name.
+    /// contain "KEY", "SECRET", or "TOKEN" in their name. Defaults to true.
     pub ignore_default_excludes: bool,
 
     /// Environment variable names to exclude from the environment.
@@ -504,7 +646,7 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
     fn from(toml: ShellEnvironmentPolicyToml) -> Self {
         // Default to inheriting the full environment when not specified.
         let inherit = toml.inherit.unwrap_or(ShellEnvironmentPolicyInherit::All);
-        let ignore_default_excludes = toml.ignore_default_excludes.unwrap_or(false);
+        let ignore_default_excludes = toml.ignore_default_excludes.unwrap_or(true);
         let exclude = toml
             .exclude
             .unwrap_or_default()
@@ -527,6 +669,287 @@ impl From<ShellEnvironmentPolicyToml> for ShellEnvironmentPolicy {
             r#set,
             include_only,
             use_profile,
+        }
+    }
+}
+
+impl Default for ShellEnvironmentPolicy {
+    fn default() -> Self {
+        Self {
+            inherit: ShellEnvironmentPolicyInherit::All,
+            ignore_default_excludes: true,
+            exclude: Vec::new(),
+            r#set: HashMap::new(),
+            include_only: Vec::new(),
+            use_profile: false,
+        }
+    }
+}
+
+// ===== Graphiti configuration =====
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphitiGroupIdStrategy {
+    Raw,
+    Hashed,
+}
+
+impl Default for GraphitiGroupIdStrategy {
+    fn default() -> Self {
+        Self::Hashed
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphitiScope {
+    Session,
+    Workspace,
+    Global,
+}
+
+fn default_graphiti_scopes_session_workspace() -> Vec<GraphitiScope> {
+    vec![GraphitiScope::Session, GraphitiScope::Workspace]
+}
+
+fn default_graphiti_ingest_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_graphiti_ingest_max_queue_size() -> usize {
+    256
+}
+
+fn default_graphiti_ingest_max_batch_size() -> usize {
+    32
+}
+
+fn default_graphiti_ingest_max_content_chars() -> usize {
+    8_000
+}
+
+fn default_graphiti_retry_max_attempts() -> u32 {
+    6
+}
+
+fn default_graphiti_retry_initial_backoff_ms() -> u64 {
+    250
+}
+
+fn default_graphiti_retry_max_backoff_ms() -> u64 {
+    5_000
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GraphitiIngest {
+    /// Request timeout for `POST /messages`.
+    #[serde(default = "default_graphiti_ingest_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Maximum number of queued ingestion jobs (ready + delayed).
+    #[serde(default = "default_graphiti_ingest_max_queue_size")]
+    pub max_queue_size: usize,
+
+    /// Maximum number of messages to send per `POST /messages`.
+    #[serde(default = "default_graphiti_ingest_max_batch_size")]
+    pub max_batch_size: usize,
+
+    /// Maximum characters to include per message content (truncate beyond this).
+    #[serde(default = "default_graphiti_ingest_max_content_chars")]
+    pub max_content_chars: usize,
+
+    #[serde(default = "default_graphiti_retry_max_attempts")]
+    pub retry_max_attempts: u32,
+
+    #[serde(default = "default_graphiti_retry_initial_backoff_ms")]
+    pub retry_initial_backoff_ms: u64,
+
+    #[serde(default = "default_graphiti_retry_max_backoff_ms")]
+    pub retry_max_backoff_ms: u64,
+}
+
+impl Default for GraphitiIngest {
+    fn default() -> Self {
+        Self {
+            timeout_ms: default_graphiti_ingest_timeout_ms(),
+            max_queue_size: default_graphiti_ingest_max_queue_size(),
+            max_batch_size: default_graphiti_ingest_max_batch_size(),
+            max_content_chars: default_graphiti_ingest_max_content_chars(),
+            retry_max_attempts: default_graphiti_retry_max_attempts(),
+            retry_initial_backoff_ms: default_graphiti_retry_initial_backoff_ms(),
+            retry_max_backoff_ms: default_graphiti_retry_max_backoff_ms(),
+        }
+    }
+}
+
+fn default_graphiti_recall_timeout_ms() -> u64 {
+    750
+}
+
+fn default_graphiti_recall_max_facts() -> usize {
+    10
+}
+
+fn default_graphiti_recall_max_fact_chars() -> usize {
+    280
+}
+
+fn default_graphiti_recall_max_total_chars() -> usize {
+    2_000
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GraphitiRecall {
+    /// If true, recall will run before each model turn.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Scope selection mode for recall (default: static).
+    #[serde(default = "default_graphiti_recall_scopes_mode")]
+    pub scopes_mode: GraphitiRecallScopesMode,
+
+    /// Request timeout for `POST /search`.
+    #[serde(default = "default_graphiti_recall_timeout_ms")]
+    pub timeout_ms: u64,
+
+    /// Maximum number of facts to request from Graphiti per query.
+    #[serde(default = "default_graphiti_recall_max_facts")]
+    pub max_facts: usize,
+
+    /// Maximum characters to include per fact when injecting into the prompt.
+    #[serde(default = "default_graphiti_recall_max_fact_chars")]
+    pub max_fact_chars: usize,
+
+    /// Maximum total characters to inject for the entire memory section.
+    #[serde(default = "default_graphiti_recall_max_total_chars")]
+    pub max_total_chars: usize,
+
+    /// Scopes to query for recall (default: session + workspace).
+    #[serde(default = "default_graphiti_scopes_session_workspace")]
+    pub scopes: Vec<GraphitiScope>,
+}
+
+impl Default for GraphitiRecall {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            scopes_mode: default_graphiti_recall_scopes_mode(),
+            timeout_ms: default_graphiti_recall_timeout_ms(),
+            max_facts: default_graphiti_recall_max_facts(),
+            max_fact_chars: default_graphiti_recall_max_fact_chars(),
+            max_total_chars: default_graphiti_recall_max_total_chars(),
+            scopes: default_graphiti_scopes_session_workspace(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum GraphitiRecallScopesMode {
+    Static,
+    Auto,
+}
+
+fn default_graphiti_recall_scopes_mode() -> GraphitiRecallScopesMode {
+    GraphitiRecallScopesMode::Static
+}
+
+fn default_graphiti_global_group_id() -> String {
+    "codex-global".to_string()
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GraphitiGlobal {
+    /// If true, enables Global scope (promotion and optional recall).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Graphiti group_id used for Global scope.
+    #[serde(default = "default_graphiti_global_group_id")]
+    pub group_id: String,
+}
+
+impl Default for GraphitiGlobal {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            group_id: default_graphiti_global_group_id(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct GraphitiAutoPromote {
+    /// If true, parse supported "Memory Directives" in user messages and enqueue extra episodes.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Graphiti {
+    /// Master enable switch (default: false).
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Explicit consent gate (default: false).
+    #[serde(default)]
+    pub consent: bool,
+
+    /// Base URL of the Graphiti REST service (e.g., "http://localhost:8000").
+    pub endpoint: Option<String>,
+
+    /// Name of an environment variable containing a bearer token.
+    pub bearer_token_env_var: Option<String>,
+
+    /// Group id strategy (default: hashed).
+    #[serde(default)]
+    pub group_id_strategy: GraphitiGroupIdStrategy,
+
+    /// If true, include git branch/commit/dirty in message metadata (default: false).
+    #[serde(default)]
+    pub include_git_metadata: bool,
+
+    /// If true, include one-time ownership/system episodes per group (default: false).
+    #[serde(default)]
+    pub include_system_messages: bool,
+
+    /// Stable per-user key for deriving the Global scope group id (optional).
+    pub user_scope_key: Option<String>,
+
+    /// Scopes to ingest automatically (default: session + workspace).
+    #[serde(default = "default_graphiti_scopes_session_workspace")]
+    pub ingest_scopes: Vec<GraphitiScope>,
+
+    #[serde(default)]
+    pub ingest: GraphitiIngest,
+
+    #[serde(default)]
+    pub recall: GraphitiRecall,
+
+    #[serde(default)]
+    pub global: GraphitiGlobal,
+
+    #[serde(default)]
+    pub auto_promote: GraphitiAutoPromote,
+}
+
+impl Default for Graphiti {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            consent: false,
+            endpoint: None,
+            bearer_token_env_var: None,
+            group_id_strategy: GraphitiGroupIdStrategy::default(),
+            include_git_metadata: false,
+            include_system_messages: false,
+            user_scope_key: None,
+            ingest_scopes: default_graphiti_scopes_session_workspace(),
+            ingest: GraphitiIngest::default(),
+            recall: GraphitiRecall::default(),
+            global: GraphitiGlobal::default(),
+            auto_promote: GraphitiAutoPromote::default(),
         }
     }
 }

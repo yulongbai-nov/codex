@@ -1,3 +1,4 @@
+use codex_core::config::Constrained;
 use codex_core::features::Feature;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
@@ -25,6 +26,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use std::sync::Mutex;
+use tracing::Level;
 use tracing_test::traced_test;
 
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -44,6 +46,7 @@ async fn responses_api_emits_api_request_event() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -85,6 +88,7 @@ async fn process_sse_emits_tracing_for_output_item() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -123,6 +127,7 @@ async fn process_sse_emits_failed_event_on_parse_error() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -162,6 +167,7 @@ async fn process_sse_records_failed_event_when_stream_closes_without_completed()
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -221,6 +227,7 @@ async fn process_sse_failed_event_records_response_error_message() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -278,6 +285,7 @@ async fn process_sse_failed_event_logs_parse_error() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -322,6 +330,7 @@ async fn process_sse_failed_event_logs_missing_error() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -375,6 +384,7 @@ async fn process_sse_failed_event_logs_response_completed_parse_error() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -425,6 +435,7 @@ async fn process_sse_emits_completed_telemetry() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -454,6 +465,7 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
     let subscriber = tracing_subscriber::fmt()
         .with_level(true)
         .with_ansi(false)
+        .with_max_level(Level::TRACE)
         .with_span_events(FmtSpan::FULL)
         .with_writer(MockWriter::new(buffer))
         .finish();
@@ -491,6 +503,7 @@ async fn handle_responses_span_records_response_kind_and_tool_name() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -517,6 +530,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
     let subscriber = tracing_subscriber::fmt()
         .with_level(true)
         .with_ansi(false)
+        .with_max_level(Level::TRACE)
         .with_span_events(FmtSpan::FULL)
         .with_writer(MockWriter::new(buffer))
         .finish();
@@ -554,6 +568,7 @@ async fn record_responses_sets_span_fields_for_response_events() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -633,6 +648,7 @@ async fn handle_response_item_records_tool_result_for_custom_tool_call() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -700,6 +716,7 @@ async fn handle_response_item_records_tool_result_for_function_call() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -777,6 +794,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_missing_ids() 
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -838,6 +856,7 @@ async fn handle_response_item_records_tool_result_for_local_shell_call() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -930,8 +949,8 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::OnRequest;
-            config.sandbox_policy = SandboxPolicy::DangerFullAccess;
+            config.approval_policy = Constrained::allow_any(AskForApproval::OnRequest);
+            config.sandbox_policy = Constrained::allow_any(SandboxPolicy::DangerFullAccess);
         })
         .build(&server)
         .await
@@ -942,6 +961,7 @@ async fn handle_container_exec_autoapprove_from_config_records_tool_decision() {
             items: vec![UserInput::Text {
                 text: "hello".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -979,7 +999,7 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -990,6 +1010,7 @@ async fn handle_container_exec_user_approved_records_tool_decision() {
             items: vec![UserInput::Text {
                 text: "approved".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -1037,7 +1058,7 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1048,6 +1069,7 @@ async fn handle_container_exec_user_approved_for_session_records_tool_decision()
             items: vec![UserInput::Text {
                 text: "persist".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -1095,7 +1117,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1106,6 +1128,7 @@ async fn handle_sandbox_error_user_approves_retry_records_tool_decision() {
             items: vec![UserInput::Text {
                 text: "retry".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -1153,7 +1176,7 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
     .await;
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1164,6 +1187,7 @@ async fn handle_container_exec_user_denies_records_tool_decision() {
             items: vec![UserInput::Text {
                 text: "deny".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -1211,7 +1235,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1222,6 +1246,7 @@ async fn handle_sandbox_error_user_approves_for_session_records_tool_decision() 
             items: vec![UserInput::Text {
                 text: "persist".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
@@ -1270,7 +1295,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
 
     let TestCodex { codex, .. } = test_codex()
         .with_config(|config| {
-            config.approval_policy = AskForApproval::UnlessTrusted;
+            config.approval_policy = Constrained::allow_any(AskForApproval::UnlessTrusted);
         })
         .build(&server)
         .await
@@ -1281,6 +1306,7 @@ async fn handle_sandbox_error_user_denies_records_tool_decision() {
             items: vec![UserInput::Text {
                 text: "deny".into(),
             }],
+            final_output_json_schema: None,
         })
         .await
         .unwrap();
